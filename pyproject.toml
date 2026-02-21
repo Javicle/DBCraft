@@ -1,0 +1,18 @@
+[project]
+name = "dbcraft"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.129.1",
+    "pandas>=2.3.3",
+    "plotly>=6.5.2",
+    "psycopg2-binary>=2.9.11",
+    "pytest>=9.0.2",
+    "sqlalchemy>=2.0.46",
+    "streamlit>=1.54.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
