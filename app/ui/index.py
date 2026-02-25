@@ -28,6 +28,6 @@ st.line_chart(chart_data)
 st.sidebar.header("Настройки")
 st.sidebar.checkbox("Показать секретное сообщение")
 
-if __name__ == "__main__":
-    st.subheader("Схема БД")
-    render_db_schema(service.get_all_tables(), relations_service.get_all())
+
+st.subheader("Схема БД")
+render_db_schema(service.get_all_tables(), relations_service.get_all())

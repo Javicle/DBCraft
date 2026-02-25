@@ -3,16 +3,19 @@ from sqlalchemy import (
     Column,
     Engine,
     Float,
+    ForeignKey,
     Integer,
     MetaData,
     String,
     Table,
     inspect,
+    text,
 )
 from typing_extensions import override
 
-from app.domain.entities import ColumnSchema, TableSchema
-from app.domain.repositories import BaseTableRepository
+from app.core.exceptions import TableAlreadyExistsError, TableNotExistsError
+from app.domain.entities import ColumnSchema, Relation, TableSchema
+from app.domain.repositories import BaseRelationRepository, BaseTableRepository
 
 column_type_dict = {
     "INT": Integer(),
@@ -35,6 +38,11 @@ class SQLAlchemyRepository(BaseTableRepository):
 
     @override
     def create_table(self, schema: TableSchema) -> None:
+        inspector = inspect(self.engine)
+        if inspector.has_table(schema.name):
+            raise TableAlreadyExistsError(
+                f"Table with name: {schema.name} already exists"
+            )
         columns = [
             Column(
                 name=column.name,
@@ -49,10 +57,10 @@ class SQLAlchemyRepository(BaseTableRepository):
         table.create(self.engine)
 
     @override
-    def delete_table(self, schema: TableSchema) -> None:
+    def delete_table(self, name: str) -> None:
         insp = inspect(self.engine)
-        if insp.has_table(schema.name):
-            table = Table(schema.name, self.metadata, autoload_with=self.engine)
+        if insp.has_table(name):
+            table = Table(name, self.metadata, autoload_with=self.engine)
             table.drop(self.engine)
 
     @override
@@ -65,7 +73,7 @@ class SQLAlchemyRepository(BaseTableRepository):
             columns_list = [
                 ColumnSchema(
                     name=col.name,
-                    column_type=SQLA_TO_DOMAIN.get(type(col.type), "VARCHAR"),  # pyright: ignore[reportArgumentType]
+                    column_type=SQLA_TO_DOMAIN.get(type(col.type), "VARCHAR"),  # pyright: ignore[]
                     nullable=True if col.nullable else False,
                     primary_key=col.primary_key,
                 )
@@ -74,3 +82,84 @@ class SQLAlchemyRepository(BaseTableRepository):
             results.append(TableSchema(name=name, columns=columns_list))
 
         return results
+
+    @override
+    def get_table(self, name: str) -> Table:
+        table = self.metadata.tables.get(name)
+        if table is None:
+            raise TableNotExistsError(f"Table with name: {name} not exists")
+        return table
+
+
+class RelationRepository(BaseRelationRepository):
+    def __init__(self, engine: Engine, metadata: MetaData) -> None:
+        self.engine = engine
+        self.metadata = metadata
+
+    @override
+    def add_relation(self, relation: Relation) -> None:
+        insp = inspect(self.engine)
+        if not insp.has_table(relation.from_table):
+            raise TableNotExistsError(
+                f"From Table with name: {relation.from_table} not exists"
+            )
+        if not insp.has_table(relation.to_table):
+            raise TableNotExistsError(
+                f"To Table with name: {relation.to_table} not exists"
+            )
+        if relation.relation_type in ("1:1" or "N:1"):
+            constraint_name = f"fk_{relation.from_table}_{relation.from_column}"
+            sql = text(f"""
+                ALTER TABLE {relation.from_table}
+                ADD COLUMN {relation.from_column}
+                ADD constraint_name {constraint_name}
+                FOREIGH KEY ({relation.from_column})
+                REFERENCES {relation.to_table}({relation.to_column})
+            """)
+            with self.engine.connect() as conn:
+                conn.execute(sql)
+                conn.commit()
+
+        elif relation.relation_type == "M:N":
+            junction_name = f"{relation.from_table}_{relation.to_table}_rel"
+            if not insp.has_table(junction_name):
+                junction = Table(
+                    junction_name,
+                    self.metadata,
+                    Column(
+                        relation.from_table,
+                        Integer,
+                        ForeignKey(f"{relation.from_table}.{relation.from_column}"),
+                        primary_key=True,
+                    ),
+                    Column(
+                        relation.to_table,
+                        Integer,
+                        ForeignKey(f"{relation.to_table}.{relation.to_column}"),
+                        primary_key=True,
+                    ),
+                )
+                junction.create(self.engine)
+
+        system_sql = text("""
+                INSERT INTO system_relations (from_table, from_column, to_table, to_column, relation_type)
+                VALUES (:from_table, :from_column, :to_table, :to_column, :relation_type)
+            """)
+        with self.engine.connect() as conn:
+            conn.execute(
+                system_sql,
+                {
+                    "from_table": relation.from_table,
+                    "from_column": relation.from_column,
+                    "to_table": relation.to_table,
+                    "to_column": relation.to_column,
+                    "relation_type": relation.relation_type,
+                },
+            )
+            conn.commit()
+
+    @override
+    def delete_relation(self, relation: Relation) -> None: ...
+
+    @override
+    def get_all_relation(self) -> list[Relation]: ...

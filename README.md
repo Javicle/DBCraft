@@ -1,4 +1,7 @@
 
 # DBCraft 🛠️
 
-**Low-code platform for visual database design and automatic interface generation.**
+**Low-code platform for visual data
+base design and automatic interface generation.**
+
+

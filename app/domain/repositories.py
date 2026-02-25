@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 
-from app.domain.entities import TableSchema
+from sqlalchemy import Table
+
+from app.domain.entities import Relation, TableSchema
 
 
 class BaseTableRepository(ABC):
@@ -8,7 +10,21 @@ class BaseTableRepository(ABC):
     def create_table(self, schema: TableSchema) -> None: ...
 
     @abstractmethod
-    def delete_table(self, schema: TableSchema) -> None: ...
+    def delete_table(self, name: str) -> None: ...
 
     @abstractmethod
     def get_all_tables(self) -> list[TableSchema]: ...
+
+    @abstractmethod
+    def get_table(self, name: str) -> Table: ...
+
+
+class BaseRelationRepository(ABC):
+    @abstractmethod
+    def add_relation(self, relation: Relation) -> None: ...
+
+    @abstractmethod
+    def delete_relation(self, relation: Relation) -> None: ...
+
+    @abstractmethod
+    def get_all_relation(self) -> list[Relation]: ...

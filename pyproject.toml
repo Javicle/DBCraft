@@ -10,9 +10,13 @@ dependencies = [
     "plotly>=6.5.2",
     "psycopg2-binary>=2.9.11",
     "pytest>=9.0.2",
+    "pyvis>=0.3.2",
     "sqlalchemy>=2.0.46",
     "streamlit>=1.54.0",
+    "streamlit-mermaid>=0.3.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+

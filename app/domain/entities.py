@@ -15,3 +15,15 @@ class ColumnSchema(BaseModel):
 class TableSchema(BaseModel):
     name: str
     columns: list[ColumnSchema]
+
+
+RelationTypes = Literal["1:1"] | Literal["M:N"] | Literal["N:1"] | Literal["Self"]
+
+
+class Relation(BaseModel):
+    id: int
+    from_table: str
+    from_column: str
+    to_table: str
+    to_column: str
+    relation_type: RelationTypes
