@@ -159,7 +159,45 @@ class RelationRepository(BaseRelationRepository):
             conn.commit()
 
     @override
-    def delete_relation(self, relation: Relation) -> None: ...
+    def delete_relation(self, relation_id: int) -> None:
+        with self.engine.connect() as conn:
+            res = conn.execute(
+                text(
+                    "SELECT constraint_name, from_table FROM system_relations WHERE id =:id"
+                ),
+                {"id": relation_id},
+            )
+
+            if not res:
+                ValueError("Relation not found")
+
+            constraint_name, from_table = res
+
+            if constraint_name:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {from_table} DROP CONSTRAINT IF EXISTS {constraint_name}"
+                    )
+                )
+
+            conn.execute(
+                text("DELETE FROM system_relations WHERE id = :id"), {"id": relation_id}
+            )
+            conn.commit
 
     @override
-    def get_all_relation(self) -> list[Relation]: ...
+    def get_all_relation(self) -> list[Relation]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("SELECT * FROM system_relations")).fetchall()
+
+        return [
+            Relation(
+                id=r.id,
+                from_table=r.from_table,
+                from_column=r.from_column,
+                to_table=r.to_table,
+                to_column=r.to_column,
+                relation_type=r.relation_type,
+            )
+            for r in rows
+        ]
