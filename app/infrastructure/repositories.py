@@ -186,7 +186,7 @@ class RelationRepository(BaseRelationRepository):
             conn.commit
 
     @override
-    def get_all_relation(self) -> list[Relation]:
+    def get_all_relations(self) -> list[Relation]:
         with self.engine.connect() as conn:
             rows = conn.execute(text("SELECT * FROM system_relations")).fetchall()
 

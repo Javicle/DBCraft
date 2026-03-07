@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from app.ui.pyvis_test import render_db_schema
+
 # 1. Заголовок и текст
 st.title("Моё первое приложение 🚀")
 st.write("Streamlit превращает скрипты в веб-интерфейсы за считанные минуты.")

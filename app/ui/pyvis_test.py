@@ -1,6 +1,9 @@
-from pyvis.network import Network
+from __future__ import annotations
+
 import streamlit.components.v1 as components
-from app.domain.entities import TableSchema
+from pyvis.network import Network
+
+from app.domain.entities import Relation, TableSchema
 
 
 def render_db_schema(tables: list[TableSchema], relations: list[Relation]):
@@ -20,9 +23,7 @@ def render_db_schema(tables: list[TableSchema], relations: list[Relation]):
     }
     """)
 
-    # Узлы (Таблицы)
     for table in tables:
-        # Формируем краткое описание
         cols_text = "\n".join(
             [f"{c.name}: {c.column_type}" for c in table.columns[:5]]
         )  # Лимит 5 полей
@@ -36,7 +37,6 @@ def render_db_schema(tables: list[TableSchema], relations: list[Relation]):
             font={"face": "monospace", "align": "left", "size": 14},
         )
 
-    # Связи
     for rel in relations:
         net.add_edge(rel.from_table, rel.to_table, label=rel.type, arrows="to")
 
