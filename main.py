@@ -1,10 +1,11 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import create_engine
 
-from app.domain.entities import ColumnSchema, TableSchema
+from app.domain.entities import ColumnSchema, TableSchema, Relation
 from app.domain.service import RelationService, TableService
+from app.infrastructure.models import Base, SystemRelation
 from app.infrastructure.repositories import RelationRepository, SQLAlchemyRepository
 from app.ui.pyvis_test import render_db_schema
 
@@ -51,7 +52,7 @@ class MainLauncher:
 
 
 engine = create_engine("sqlite:///:memory:")
-metadata = MetaData()
+metadata = Base.metadata
 
 sqlalchemy_repository = SQLAlchemyRepository(engine, metadata)
 relation_repository = RelationRepository(engine, metadata)
@@ -60,18 +61,114 @@ table_service = TableService(sqlalchemy_repository)
 relation_service = RelationService(relation_repository, table_service)
 starter = MainLauncher(table_service, relation_service)
 
-
-schema = TableSchema(
+schema_users = TableSchema(
     name="users",
     columns=[
         ColumnSchema(name="id", column_type="INT", primary_key=True, nullable=False),
         ColumnSchema(
             name="name", column_type="VARCHAR", nullable=True, primary_key=False
         ),
+        ColumnSchema(
+            name="email", column_type="VARCHAR", nullable=False, primary_key=False
+        ),
     ],
 )
 
+# 2. Orders
+schema_orders = TableSchema(
+    name="orders",
+    columns=[
+        ColumnSchema(name="id", column_type="INT", primary_key=True, nullable=False),
+        ColumnSchema(
+            name="user_id", column_type="INT", nullable=False, primary_key=False
+        ),
+        ColumnSchema(
+            name="total", column_type="FLOAT", nullable=True, primary_key=False
+        ),
+        ColumnSchema(
+            name="created_at", column_type="DATE", nullable=True, primary_key=False
+        ),
+    ],
+)
 
+# 3. Products
+schema_products = TableSchema(
+    name="products",
+    columns=[
+        ColumnSchema(name="id", column_type="INT", primary_key=True, nullable=False),
+        ColumnSchema(
+            name="name", column_type="VARCHAR", nullable=False, primary_key=False
+        ),
+        ColumnSchema(
+            name="price", column_type="FLOAT", nullable=False, primary_key=False
+        ),
+    ],
+)
+
+# 4. Order_Items
+schema_order_items = TableSchema(
+    name="order_items",
+    columns=[
+        ColumnSchema(name="id", column_type="INT", primary_key=True, nullable=False),
+        ColumnSchema(
+            name="order_id", column_type="INT", nullable=False, primary_key=False
+        ),
+        ColumnSchema(
+            name="product_id", column_type="INT", nullable=False, primary_key=False
+        ),
+        ColumnSchema(
+            name="quantity", column_type="INT", nullable=False, primary_key=False
+        ),
+    ],
+)
+
+# Создаём все таблицы
+metadata.create_all(engine)
+table_service.create_table(schema_users)
+table_service.create_table(schema_orders)
+table_service.create_table(schema_products)
+table_service.create_table(schema_order_items)
+
+# === Создаём связи ===
+
+# users -> orders (1:N)
+relation_service.add_relation(
+    Relation(
+        id=1,
+        from_table="users",
+        from_column="id",
+        to_table="orders",
+        to_column="user_id",
+        relation_type="N:1",
+    )
+)
+
+# orders -> order_items (1:N)
+relation_service.add_relation(
+    Relation(
+        id=2,
+        from_table="orders",
+        from_column="id",
+        to_table="order_items",
+        to_column="order_id",
+        relation_type="1:N",
+    )
+)
+
+# products -> order_items (1:N)
+relation_service.add_relation(
+    Relation(
+        id=3,
+        from_table="products",
+        from_column="id",
+        to_table="order_items",
+        to_column="product_id",
+        relation_type="1:N",
+    )
+)
+
+
+metadata.create_all(engine)
 table_service.create_table(schema)
 
 starter.launch_page()
