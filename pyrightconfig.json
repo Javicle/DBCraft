@@ -1,8 +1,7 @@
-
 {
   "reportUnannotatedClassAttribute": "none",
-  "typeCheckingMode": "standart",
+  "typeCheckingMode": "basic",
   "reportUnusedCallResult": "none",
   "reportUnknownMemberType": "none",
-  "reportUnknownVariableType":"none"
+  "reportUnknownVariableType": "none"
 }

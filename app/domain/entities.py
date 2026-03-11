@@ -17,7 +17,9 @@ class TableSchema(BaseModel):
     columns: list[ColumnSchema]
 
 
-RelationTypes = Literal["1:1"] | Literal["M:N"] | Literal["N:1"] | Literal["Self"]
+RelationTypes = (
+    Literal["1:1"] | Literal["M:N"] | Literal["N:1"] | Literal["Self"] | Literal["1:N"]
+)
 
 
 class Relation(BaseModel):

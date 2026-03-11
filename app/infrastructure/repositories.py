@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     Engine,
     Float,
     ForeignKey,
@@ -8,7 +9,9 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    func,
     inspect,
+    select,
     text,
 )
 from typing_extensions import override
@@ -16,12 +19,14 @@ from typing_extensions import override
 from app.core.exceptions import TableAlreadyExistsError, TableNotExistsError
 from app.domain.entities import ColumnSchema, Relation, TableSchema
 from app.domain.repositories import BaseRelationRepository, BaseTableRepository
+from app.infrastructure.dialect_adapter import DialectAdapter
 
 column_type_dict = {
     "INT": Integer(),
     "VARCHAR": String(255),
     "BOOLEAN": Boolean(),
     "FLOAT": Float(),
+    "DATE": Date(),
 }
 SQLA_TO_DOMAIN = {
     Integer: "INT",
@@ -95,57 +100,72 @@ class RelationRepository(BaseRelationRepository):
     def __init__(self, engine: Engine, metadata: MetaData) -> None:
         self.engine = engine
         self.metadata = metadata
+        self.dialect = DialectAdapter(engine)
 
     @override
     def add_relation(self, relation: Relation) -> None:
         insp = inspect(self.engine)
+
         if not insp.has_table(relation.from_table):
-            raise TableNotExistsError(
-                f"From Table with name: {relation.from_table} not exists"
-            )
+            raise TableNotExistsError(f"Table '{relation.from_table}' not exists")
         if not insp.has_table(relation.to_table):
-            raise TableNotExistsError(
-                f"To Table with name: {relation.to_table} not exists"
-            )
-        if relation.relation_type in ("1:1" or "N:1"):
-            constraint_name = f"fk_{relation.from_table}_{relation.from_column}"
-            sql = text(f"""
-                ALTER TABLE {relation.from_table}
-                ADD COLUMN {relation.from_column}
-                ADD constraint_name {constraint_name}
-                FOREIGH KEY ({relation.from_column})
-                REFERENCES {relation.to_table}({relation.to_column})
-            """)
-            with self.engine.connect() as conn:
-                conn.execute(sql)
-                conn.commit()
+            raise TableNotExistsError(f"Table '{relation.to_table}' not exists")
 
-        elif relation.relation_type == "M:N":
-            junction_name = f"{relation.from_table}_{relation.to_table}_rel"
-            if not insp.has_table(junction_name):
-                junction = Table(
-                    junction_name,
-                    self.metadata,
-                    Column(
-                        relation.from_table,
-                        Integer,
-                        ForeignKey(f"{relation.from_table}.{relation.from_column}"),
-                        primary_key=True,
-                    ),
-                    Column(
-                        relation.to_table,
-                        Integer,
-                        ForeignKey(f"{relation.to_table}.{relation.to_column}"),
-                        primary_key=True,
-                    ),
-                )
-                junction.create(self.engine)
+        with self.engine.begin() as conn:
+            constraint_name = None
 
-        system_sql = text("""
-                INSERT INTO system_relations (from_table, from_column, to_table, to_column, relation_type)
-                VALUES (:from_table, :from_column, :to_table, :to_column, :relation_type)
+            # 1. Физические FK через ALTER TABLE (только PG/MySQL)
+            if self.dialect.supports_alter_constraint:
+                if relation.relation_type in ("N:1", "1:1"):
+                    constraint_name = f"fk_{relation.from_table}_{relation.from_column}"
+                    sql = text(f"""
+                        ALTER TABLE {relation.from_table}
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({relation.from_column})
+                        REFERENCES {relation.to_table}({relation.to_column})
+                    """)
+                    conn.execute(sql)
+
+                elif relation.relation_type == "1:N":
+                    constraint_name = f"fk_{relation.to_table}_{relation.to_column}"
+                    sql = text(f"""
+                        ALTER TABLE {relation.to_table}
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({relation.to_column})
+                        REFERENCES {relation.from_table}({relation.from_column})
+                    """)
+                    conn.execute(sql)
+
+            # 2. M:N через CREATE TABLE (работает везде, включая SQLite)
+            if relation.relation_type == "M:N":
+                junction_name = f"{relation.from_table}_{relation.to_table}_rel"
+                constraint_name = junction_name
+
+                if not insp.has_table(junction_name):
+                    junction = Table(
+                        junction_name,
+                        self.metadata,
+                        Column(
+                            f"{relation.from_table}_id",
+                            Integer,
+                            ForeignKey(f"{relation.from_table}.{relation.from_column}"),
+                            primary_key=True,
+                        ),
+                        Column(
+                            f"{relation.to_table}_id",
+                            Integer,
+                            ForeignKey(f"{relation.to_table}.{relation.to_column}"),
+                            primary_key=True,
+                        ),
+                    )
+                    junction.create(conn)
+
+            # 3. Запись в системную таблицу (всегда)
+            system_sql = text("""
+                INSERT INTO system_relations
+                (from_table, from_column, to_table, to_column, relation_type, constraint_name)
+                VALUES (:from_table, :from_column, :to_table, :to_column, :relation_type, :constraint_name)
             """)
-        with self.engine.connect() as conn:
             conn.execute(
                 system_sql,
                 {
@@ -154,12 +174,66 @@ class RelationRepository(BaseRelationRepository):
                     "to_table": relation.to_table,
                     "to_column": relation.to_column,
                     "relation_type": relation.relation_type,
+                    "constraint_name": constraint_name,
                 },
             )
-            conn.commit()
 
     @override
-    def delete_relation(self, relation: Relation) -> None: ...
+    def delete_relation(self, relation_id: int) -> None:
+        with self.engine.begin() as conn:
+            res = (
+                conn.execute(
+                    text("""
+                        SELECT constraint_name, from_table, to_table, relation_type
+                        FROM system_relations
+                        WHERE id = :id
+                    """),
+                    {"id": relation_id},
+                )
+                .mappings()
+                .fetchone()
+            )
+
+            if not res:
+                raise ValueError(f"Relation with id {relation_id} not found")
+
+            constraint_name = res["constraint_name"]
+            from_table = res["from_table"]
+            to_table = res["to_table"]
+            relation_type = res["relation_type"]
+
+            if constraint_name:
+                if relation_type == "M:N":
+                    conn.execute(text(f"DROP TABLE IF EXISTS {constraint_name}"))
+                else:
+                    table_name = to_table if relation_type == "1:N" else from_table
+
+                    if self.dialect.supports_alter_constraint:
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"
+                            )
+                        )
+                    else:
+                        pass
+
+            conn.execute(
+                text("DELETE FROM system_relations WHERE id = :id"), {"id": relation_id}
+            )
 
     @override
-    def get_all_relation(self) -> list[Relation]: ...
+    def get_all_relations(self) -> list[Relation]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("SELECT * FROM system_relations")).fetchall()
+
+        return [
+            Relation(
+                id=r.id,
+                from_table=r.from_table,
+                from_column=r.from_column,
+                to_table=r.to_table,
+                to_column=r.to_column,
+                relation_type=r.relation_type,
+            )
+            for r in rows
+        ]
