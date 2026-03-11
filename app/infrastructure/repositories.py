@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     Engine,
     Float,
     ForeignKey,
@@ -8,7 +9,9 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    func,
     inspect,
+    select,
     text,
 )
 from typing_extensions import override
@@ -16,12 +19,14 @@ from typing_extensions import override
 from app.core.exceptions import TableAlreadyExistsError, TableNotExistsError
 from app.domain.entities import ColumnSchema, Relation, TableSchema
 from app.domain.repositories import BaseRelationRepository, BaseTableRepository
+from app.infrastructure.dialect_adapter import DialectAdapter
 
 column_type_dict = {
     "INT": Integer(),
     "VARCHAR": String(255),
     "BOOLEAN": Boolean(),
     "FLOAT": Float(),
+    "DATE": Date(),
 }
 SQLA_TO_DOMAIN = {
     Integer: "INT",
@@ -95,6 +100,7 @@ class RelationRepository(BaseRelationRepository):
     def __init__(self, engine: Engine, metadata: MetaData) -> None:
         self.engine = engine
         self.metadata = metadata
+        self.dialect = DialectAdapter(engine)
 
     @override
     def add_relation(self, relation: Relation) -> None:
@@ -108,34 +114,34 @@ class RelationRepository(BaseRelationRepository):
         with self.engine.begin() as conn:
             constraint_name = None
 
-            if relation.relation_type in ("N:1", "1:1"):
-                constraint_name = f"fk_{relation.from_table}_{relation.from_column}"
-                sql = text(f"""
-                    ALTER TABLE {relation.from_table}
-                    ADD CONSTRAINT {constraint_name}
-                    FOREIGN KEY ({relation.from_column})
-                    REFERENCES {relation.to_table}({relation.to_column})
-                """)
-                conn.execute(sql)
+            # 1. Физические FK через ALTER TABLE (только PG/MySQL)
+            if self.dialect.supports_alter_constraint:
+                if relation.relation_type in ("N:1", "1:1"):
+                    constraint_name = f"fk_{relation.from_table}_{relation.from_column}"
+                    sql = text(f"""
+                        ALTER TABLE {relation.from_table}
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({relation.from_column})
+                        REFERENCES {relation.to_table}({relation.to_column})
+                    """)
+                    conn.execute(sql)
 
-            elif relation.relation_type == "1:N":
-                constraint_name = f"fk_{relation.to_table}_{relation.to_column}"
-                sql = text(f"""
-                    ALTER TABLE {relation.to_table}
-                    ADD CONSTRAINT {constraint_name}
-                    FOREIGN KEY ({relation.to_column})
-                    REFERENCES {relation.from_table}({relation.from_column})
-                """)
-                conn.execute(sql)
+                elif relation.relation_type == "1:N":
+                    constraint_name = f"fk_{relation.to_table}_{relation.to_column}"
+                    sql = text(f"""
+                        ALTER TABLE {relation.to_table}
+                        ADD CONSTRAINT {constraint_name}
+                        FOREIGN KEY ({relation.to_column})
+                        REFERENCES {relation.from_table}({relation.from_column})
+                    """)
+                    conn.execute(sql)
 
-            elif relation.relation_type == "M:N":
+            # 2. M:N через CREATE TABLE (работает везде, включая SQLite)
+            if relation.relation_type == "M:N":
                 junction_name = f"{relation.from_table}_{relation.to_table}_rel"
-                constraint_name = (
-                    junction_name  # Сохраним имя таблицы вместо имени констрейнта
-                )
+                constraint_name = junction_name
 
                 if not insp.has_table(junction_name):
-                    # В идеале здесь нужно динамически узнавать тип PK (Integer, String, UUID)
                     junction = Table(
                         junction_name,
                         self.metadata,
@@ -152,12 +158,11 @@ class RelationRepository(BaseRelationRepository):
                             primary_key=True,
                         ),
                     )
-                    # Выполняем создание таблицы через текущее соединение
                     junction.create(conn)
 
-            # Запись в системную таблицу в той же транзакции
+            # 3. Запись в системную таблицу (всегда)
             system_sql = text("""
-                INSERT INTO system_relations 
+                INSERT INTO system_relations
                 (from_table, from_column, to_table, to_column, relation_type, constraint_name)
                 VALUES (:from_table, :from_column, :to_table, :to_column, :relation_type, :constraint_name)
             """)
@@ -175,19 +180,14 @@ class RelationRepository(BaseRelationRepository):
 
     @override
     def delete_relation(self, relation_id: int) -> None:
-        db_dialect = (
-            self.engine.dialect.name
-        )  # Вернет 'sqlite', 'postgresql', 'mysql' и т.д.
-
         with self.engine.begin() as conn:
-            # Используем .mappings(), чтобы обращаться к результату как к словарю
             res = (
                 conn.execute(
                     text("""
-                    SELECT constraint_name, from_table, to_table, relation_type 
-                    FROM system_relations 
-                    WHERE id = :id
-                """),
+                        SELECT constraint_name, from_table, to_table, relation_type
+                        FROM system_relations
+                        WHERE id = :id
+                    """),
                     {"id": relation_id},
                 )
                 .mappings()
@@ -201,30 +201,39 @@ class RelationRepository(BaseRelationRepository):
             from_table = res["from_table"]
             to_table = res["to_table"]
             relation_type = res["relation_type"]
+
             if constraint_name:
                 if relation_type == "M:N":
                     conn.execute(text(f"DROP TABLE IF EXISTS {constraint_name}"))
                 else:
                     table_name = to_table if relation_type == "1:N" else from_table
 
-                    # Ветвим логику в зависимости от базы данных
-                    if db_dialect == "sqlite":
-                        # В SQLite нельзя просто сделать DROP CONSTRAINT.
-                        # Здесь мы либо используем обходной путь (Alembic Batch),
-                        # либо (если это пет-проект/тесты) просто пропускаем удаление FK на уровне БД,
-                        # удаляя связь только из нашей системной таблицы system_relations.
-                        print(
-                            f"Warning: SQLite doesn't support DROP CONSTRAINT. Skipping schema alter for {table_name}."
-                        )
-                    else:
-                        # Для нормальных БД (PG, MySQL) всё работает как часы
+                    if self.dialect.supports_alter_constraint:
                         conn.execute(
                             text(
                                 f"ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {constraint_name}"
                             )
                         )
+                    else:
+                        pass
 
-            # Удаляем запись из системной таблицы (работает везде)
             conn.execute(
                 text("DELETE FROM system_relations WHERE id = :id"), {"id": relation_id}
             )
+
+    @override
+    def get_all_relations(self) -> list[Relation]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(text("SELECT * FROM system_relations")).fetchall()
+
+        return [
+            Relation(
+                id=r.id,
+                from_table=r.from_table,
+                from_column=r.from_column,
+                to_table=r.to_table,
+                to_column=r.to_column,
+                relation_type=r.relation_type,
+            )
+            for r in rows
+        ]

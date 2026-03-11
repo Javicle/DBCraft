@@ -28,7 +28,6 @@ class RelationService:
         self.table_service = table_service
 
     def add_relation(self, relation: Relation) -> None:
-        # Валидация: существуют ли таблицы
         self.repo.add_relation(relation)
 
     def get_all_relations(self) -> list[Relation]:

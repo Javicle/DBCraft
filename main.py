@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 
 from app.domain.entities import ColumnSchema, TableSchema, Relation
 from app.domain.service import RelationService, TableService
-from app.infrastructure.models import Base, SystemRelation
+from app.infrastructure.models import Base
 from app.infrastructure.repositories import RelationRepository, SQLAlchemyRepository
 from app.ui.pyvis_test import render_db_schema
 
@@ -169,6 +169,5 @@ relation_service.add_relation(
 
 
 metadata.create_all(engine)
-table_service.create_table(schema)
 
 starter.launch_page()
